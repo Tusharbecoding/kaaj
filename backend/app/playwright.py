@@ -1,48 +1,64 @@
-from playwright.async_api import async_playwright
+from playwright.async_api import async_playwright, Error as PlaywrightError
+import logging
+
+# Configure logging
+logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
 
 async def scrape_business(business_name):
     results = []
     url = "https://search.sunbiz.org/Inquiry/CorporationSearch/ByName"
-    async with async_playwright() as p:
-        browser = await p.chromium.launch(headless=True, args=["--no-sandbox"])
-        page = await browser.new_page()
+    
+    try:
+        async with async_playwright() as p:
+            browser = await p.chromium.launch(headless=True, args=["--no-sandbox"])
+            page = await browser.new_page()
+            
+            try:
+                await page.goto(url)
+                logging.info("Page loaded successfully.")
+            except PlaywrightError as e:
+                logging.error(f"Failed to load page: {e}")
+                return results
 
-        # Navigate to the search page
-        await page.goto(url)
-        print("Page loaded successfully.")
+            try:
+                await page.fill("input#SearchTerm", business_name)
+                await page.click("input[type='submit'][value='Search Now']")
+                logging.info(f"Searched for business name: {business_name}")
+            except PlaywrightError as e:
+                logging.error(f"Failed to interact with the search form: {e}")
+                return results
 
-        # Fill the search input and submit the form
-        await page.fill("input#SearchTerm", business_name)
-        await page.click("input[type='submit'][value='Search Now']")
-        print(f"Searched for business name: {business_name}")
+            try:
+                await page.wait_for_selector("table", timeout=10000)
+                rows = await page.query_selector_all("table tr")
+                logging.info(f"Number of rows found: {len(rows)}")
+            except PlaywrightError as e:
+                logging.error(f"Failed to find or load the results table: {e}")
+                return results
 
-        # Wait for the results table to load
-        await page.wait_for_selector("table", timeout=10000)
+            for row in rows[1:]:
+                try:
+                    cols = await row.query_selector_all("td")
+                    if len(cols) >= 3:
+                        business_name = (await cols[0].inner_text()).strip()
+                        doc_number = (await cols[1].inner_text()).strip() if len(cols) > 1 else None
+                        status = (await cols[2].inner_text()).strip() if len(cols) > 2 else None
+                        logging.info(f"Scraped row: {business_name}, {doc_number}, {status}")
 
-        # Extract rows from the results table
-        rows = await page.query_selector_all("table tr")
-        print(f"Number of rows found: {len(rows)}")
+                        results.append({
+                            "business_name": business_name,
+                            "doc_number": doc_number,
+                            "status": status,
+                            "registration_date": None,  
+                            "state_of_formation": "",  
+                        })
+                except PlaywrightError as e:
+                    logging.warning(f"Error processing row: {e}")
+            
+            await browser.close()
 
-        # Iterate over rows, skipping the header row
-        for row in rows[1:]:
-            cols = await row.query_selector_all("td")
-            if len(cols) >= 3:
-                business_name = (await cols[0].inner_text()).strip()
-                doc_number = (await cols[1].inner_text()).strip() if len(cols) > 1 else None
-                status = (await cols[2].inner_text()).strip() if len(cols) > 2 else None
-                print(f"Scraped row: {business_name}, {doc_number}, {status}")
-
-                # Append the result
-                results.append({
-                    "business_name": business_name,
-                    "doc_number": doc_number,
-                    "status": status,
-                    "registration_date": None,  # Update if date is available
-                    "state_of_formation": "",  # Update if state is available
-                })
-
-        # Close the browser
-        await browser.close()
-
-    print(f"Final results: {results}")
+    except PlaywrightError as e:
+        logging.error(f"Error launching browser or interacting with Playwright: {e}")
+    
+    logging.info(f"Final results: {results}")
     return results
